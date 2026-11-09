@@ -32,7 +32,10 @@ class SimEnv(base_env.BaseEnv):
             self._init_camera()
 
         return
-    
+
+    def _apply_external_disturbance(self):
+        return
+
     def get_obs_space(self):
         obs = self._compute_obs()
         obs_shape = list(obs.shape[1:])
@@ -85,6 +88,7 @@ class SimEnv(base_env.BaseEnv):
     
     def _pre_physics_step(self, actions):
         self._apply_action(actions)
+        self._apply_external_disturbance()
         return
     
     def _physics_step(self):

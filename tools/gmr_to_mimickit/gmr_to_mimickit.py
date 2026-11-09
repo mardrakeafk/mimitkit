@@ -26,11 +26,14 @@ Output:
     Creates a dictionary containing MimicKit motion data saved as a pickle file, with loop mode stored as INT and motion data stored as
     concatenated arrays of [root_pos, root_rot_expmap, dof_pos] per frame.
 """
+import sys
+import numpy.core as core
+import os
+sys.modules['numpy._core'] = core
 
 import argparse
 import pickle
 import numpy as np
-import sys
 
 import torch
 
@@ -52,13 +55,11 @@ def convert_gmr_to_mimickit(gmr_file_path, output_file_path, loop_mode, start_fr
         loop_mode_out = LoopMode.WRAP # MimicKit LoopMode.WRAP
     elif loop_mode == "clamp":
         loop_mode_out = LoopMode.CLAMP # MimicKit LoopMode.CLAMP
-    else:
-        raise ValueError(f"Invalid loop_mode: {loop_mode}. Choose 'wrap' or 'clamp'.")
     
     # Load GMR format data
     with open(gmr_file_path, 'rb') as f:
         gmr_data = pickle.load(f)
-    
+
     # Extract data from GMR format
     fps = gmr_data['fps']
     root_pos = gmr_data['root_pos']  # Shape: (num_frames, 3)
@@ -74,20 +75,20 @@ def convert_gmr_to_mimickit(gmr_file_path, output_file_path, loop_mode, start_fr
     print(f"🔄 Root Rotation: type={type(root_rot_quat).__name__}, shape={root_rot_quat.shape}")
     print(f"🦴 DOF Position:  type={type(dof_pos).__name__}, shape={dof_pos.shape}")
     print("="*60 + "\n")
-    
+
     # Verify shapes
     if root_pos.ndim != 2 or root_pos.shape[1] != 3:
         raise ValueError(f"Expected root_pos shape (num_frames, 3), got {root_pos.shape}")
-        
+
     if root_rot_quat.ndim != 2 or root_rot_quat.shape[1] != 4:
         raise ValueError(f"Expected root_rot_quat shape (num_frames, 4), got {root_rot_quat.shape}")
-        
+
     if dof_pos.ndim != 2:
         raise ValueError(f"Expected dof_pos to be 2D array, got {dof_pos.ndim}D")
 
     # Convert quaternion to exponential map
-    root_rot = quat_to_exp_map(torch.tensor(root_rot_quat)).numpy()  
-    
+    root_rot = quat_to_exp_map(torch.tensor(root_rot_quat)).numpy()
+
     # Stack all motion data along the last dimension
     # frames shape: (num_frames, 3 + 3 + num_dofs) = (num_frames, 6 + num_dofs)
     frames = np.concatenate([root_pos, root_rot, dof_pos], axis=1)
@@ -104,7 +105,7 @@ def convert_gmr_to_mimickit(gmr_file_path, output_file_path, loop_mode, start_fr
 
     # Save to MimicKit format
     out_data.save(output_file_path)
-    
+
     print("\n" + "="*60)
     print("✅ CONVERSION SUCCESSFUL")
     print("="*60)
@@ -120,16 +121,21 @@ def convert_gmr_to_mimickit(gmr_file_path, output_file_path, loop_mode, start_fr
     return out_data
 
 def main():
-    parser = argparse.ArgumentParser(description="Convert GMR motion data to MimicKit format.")
-    parser.add_argument("--input_file", required=True, help="Path to the input GMR pickle file")
-    parser.add_argument("--output_file", required=True, help="Path to the output MimicKit pickle file")
-    parser.add_argument("--loop", default="wrap", choices=["wrap", "clamp"], help="Enable loop mode on the converted motion")
-    parser.add_argument("--start_frame", type=int, default=0, help="Start frame for chopping the motion")
-    parser.add_argument("--end_frame", type=int, default=-1, help="End frame for chopping the motion")
-    parser.add_argument("--output_fps", type=int, default=-1, help="Frame rate for the output motion (default: same as input)")
-    args = parser.parse_args()
+    folder = "/home/maxchen/PycharmProjects/MimicKit/data/HitReactionConverted/Medium"
+    save_folder = "/home/maxchen/PycharmProjects/MimicKit/data/HitReactionWithoutStanding/MediumClamp"
 
-    convert_gmr_to_mimickit(args.input_file, args.output_file, loop_mode=args.loop, start_frame=args.start_frame, end_frame=args.end_frame, output_fps=args.output_fps)
+    for dirpath, dirnames, filenames in os.walk(folder):
+        print("当前目录：", dirpath)
+
+        for filename in filenames:
+            file_path = os.path.join(dirpath, filename)
+            save_path = os.path.join(save_folder, filename)
+            with open("/home/maxchen/PycharmProjects/MimicKit/Light_Medium_start_frame.pkl", "rb") as f:
+                motion_data = pickle.load(f)
+            start_frame = motion_data[filename]['frame_0based']
+            convert_gmr_to_mimickit(file_path, save_path, loop_mode="clamp", start_frame=start_frame, end_frame=-1, output_fps=-1)
+
+
 
 
 if __name__ == "__main__":

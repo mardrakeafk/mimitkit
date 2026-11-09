@@ -1,0 +1,7 @@
+--num_envs 4096
+
+--env_config data/envs/deepmimic_g1_walk_env.yaml
+--agent_config data/agents/deepmimic_g1_ppo_agent.yaml
+
+--log_file g1/outputtest/walk_log.txt
+--out_model_file g1/outputtest/walk_model1.pt

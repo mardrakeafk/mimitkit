@@ -7,6 +7,8 @@ import envs.base_env as base_env
 import envs.char_env as char_env
 import util.stats_tracker as stats_tracker
 import util.torch_util as torch_util
+from isaacgym import gymapi, gymutil
+
 
 class DeepMimicEnv(char_env.CharEnv):
     def __init__(self, config, num_envs, device, visualize):
@@ -39,12 +41,34 @@ class DeepMimicEnv(char_env.CharEnv):
         self._reward_key_pos_scale = env_config.get("reward_key_pos_scale")
         
         self._visualize_ref_char = env_config.get("visualize_ref_char", True)
+        self._push_marker_id = -1  # ← 移到这里,super 之前
+
         
         super().__init__(config=config, num_envs=num_envs, device=device,
                          visualize=visualize)
-        
+
+        hit_body_names = [
+            # 头
+            "torso_link"
+        ]
+        char_id = self._get_char_id()
+
+        self._hit_body_ids = torch.tensor(
+            [self._engine.find_actor_body_id(0, char_id, name)
+             for name in hit_body_names],
+            device=self._device
+        )
+
+        # 每个 env 当前被击中的 body
+        self._push_body_id = torch.zeros(
+            self._engine.get_num_envs(),
+            dtype=torch.long,
+            device=self._device
+        )
         return
-    
+
+
+
     def get_reward_succ(self):
         # setting the done flag flat to fail at the end of the motion avoids the
         # local minimal of a character just standing still until the end of the motion
@@ -94,6 +118,10 @@ class DeepMimicEnv(char_env.CharEnv):
 
         joint_err_w = env_config.get("joint_err_w", None)
         self._parse_joint_err_weights(joint_err_w)
+
+        self._push_active = torch.zeros(self.get_num_envs(), device=self._device, dtype=torch.bool)
+        self._push_timer = torch.zeros(self.get_num_envs(), device=self._device, dtype=torch.int)
+        self._push_force = torch.zeros((self.get_num_envs(), 3), device=self._device)
         
         return
 
@@ -206,13 +234,240 @@ class DeepMimicEnv(char_env.CharEnv):
             motion_times = self._time_buf[env_ids] + self._motion_time_offsets[env_ids]
         return motion_times
 
+    def _update_push_marker(self):
+        # print("update_push_marker called, id =", self._push_marker_id)  # ← 临时
+        if (self._push_marker_id < 0):
+            return
+
+        char_id = self._get_char_id()
+        num_envs = self.get_num_envs()
+
+        body_pos = self._engine.get_body_pos(char_id)
+        env_idx = torch.arange(num_envs, device=self._device)
+        hit_pos = body_pos[env_idx, self._push_body_id]
+
+        forces = self._push_force
+        mag = torch.linalg.vector_norm(forces, dim=-1)
+        active = torch.logical_and(self._push_active, mag > 1e-6)
+
+        dir_vec = forces / mag.clamp(min=1e-6).unsqueeze(-1)
+        quat = torch_util.quat_from_x_to_dir(dir_vec)
+
+        length = (mag * 0.002).clamp(min=0.15, max=1.0)
+        pos = hit_pos - dir_vec * length.unsqueeze(-1)
+
+        # 不激活时移到地下藏起来
+        pos = pos.clone()
+        pos[~active, 2] = -100.0
+
+        marker_id = self._push_marker_id
+        self._engine.set_root_pos(None, marker_id, pos)
+        self._engine.set_root_rot(None, marker_id, quat)
+        self._engine.set_root_vel(None, marker_id, 0.0)
+        self._engine.set_root_ang_vel(None, marker_id, 0.0)
+        return
+
+    def _apply_random_push(self):
+        num_envs = self._engine.get_num_envs()
+
+        # ===== 1️⃣ 触发新的 push =====
+        trigger = torch.rand(num_envs, device=self._device) < 0.02
+        trigger = torch.logical_and(trigger, ~self._push_active)  # 不能覆盖正在推的
+
+        if torch.any(trigger):
+            rand_dir = torch.randn((num_envs, 3), device=self._device)
+            rand_dir[:, 2] = 0
+            rand_dir = torch.nn.functional.normalize(rand_dir, dim=-1)
+
+            magnitude = torch.rand(num_envs, device=self._device) * 200 + 300
+            forces = rand_dir * magnitude.unsqueeze(-1)
+
+            duration = 6  # 60帧 ≈ 2秒（如果 dt=1/30）
+
+            self._push_force[trigger] = forces[trigger]
+            self._push_timer[trigger] = duration
+            self._push_active[trigger] = True
+
+            rand_idx = torch.randint(
+                0,
+                len(self._hit_body_ids),
+                (num_envs,),
+                device=self._device
+            )
+
+            rand_body_ids = self._hit_body_ids[rand_idx]
+
+            # 只给 trigger 的 env 赋值
+            self._push_body_id[trigger] = rand_body_ids[trigger]
+
+        # ===== 2️⃣ 持续施加 =====
+        active = self._push_active
+
+        if torch.any(active):
+            char_id = self._get_char_id()
+            body_id = self._push_body_id
+
+            forces = torch.zeros((num_envs, 3), device=self._device)
+            forces[active] = self._push_force[active]
+
+            self._engine.set_body_forces(
+                env_id=None,
+                actor_id=char_id,
+                body_id=body_id,
+                forces=forces
+            )
+
+
+            # ===== 3️⃣ 计时结束 =====
+            self._push_timer[active] -= 1
+
+            done = self._push_timer <= 0
+            self._push_active[done] = False
+            self._push_force[done] = 0
+
+    def _apply_random_push_from_time(self):
+        num_envs = self._engine.get_num_envs()
+        char_id = self._get_char_id()
+
+        # 第9帧受到冲击，帧编号从0开始
+        impact_frame = 16
+
+        # 持续2个控制帧
+        # control_freq=30时约为0.067秒
+        duration = 2
+
+        # =========================================================
+        # 1. 第9帧触发冲击
+        # =========================================================
+
+        trigger = self._timestep_buf % 122== impact_frame
+        trigger = torch.logical_and(trigger, ~self._push_active)
+
+        if torch.any(trigger):
+            # 获取角色当前Root朝向
+            root_rot = self._engine.get_root_rot(char_id)
+
+            # 假设角色局部正前方为+X
+            local_forward = torch.zeros(
+                (num_envs, 3),
+                device=self._device,
+                dtype=root_rot.dtype,
+            )
+            local_forward[:, 0] = 1.0
+
+            # 转换成世界坐标下的正前方
+            world_forward = torch_util.quat_rotate(
+                root_rot,
+                local_forward,
+            )
+
+            # 冲击只在水平面内
+            world_forward[:, 2] = 0.0
+            world_forward = torch.nn.functional.normalize(
+                world_forward,
+                dim=-1,
+                eps=1e-8,
+            )
+
+            # 从正面打向角色，因此受力方向指向角色后方
+            base_force_dir = -world_forward
+
+            # 随机偏差-30°～30°
+            angle = (
+                    torch.rand(num_envs, device=self._device) * 60.0
+                    - 30.0
+            )
+            angle = torch.deg2rad(angle)
+
+            cos_angle = torch.cos(angle)
+            sin_angle = torch.sin(angle)
+
+            # 绕世界Z轴旋转
+            force_dir = torch.zeros_like(base_force_dir)
+
+            force_dir[:, 0] = (
+                    cos_angle * base_force_dir[:, 0]
+                    - sin_angle * base_force_dir[:, 1]
+            )
+
+            force_dir[:, 1] = (
+                    sin_angle * base_force_dir[:, 0]
+                    + cos_angle * base_force_dir[:, 1]
+            )
+
+            # 200～300 N
+            magnitude = (
+                    torch.rand(num_envs, device=self._device) * 100.0
+                    + 200.0
+            )
+
+            push_forces = force_dir * magnitude.unsqueeze(-1)
+
+            self._push_force[trigger] = push_forces[trigger]
+            self._push_timer[trigger] = duration
+            self._push_active[trigger] = True
+
+            # 随机选择受击部位
+            rand_idx = torch.randint(
+                0,
+                len(self._hit_body_ids),
+                (num_envs,),
+                device=self._device,
+            )
+
+            rand_body_ids = self._hit_body_ids[rand_idx]
+            self._push_body_id[trigger] = rand_body_ids[trigger]
+
+        # =========================================================
+        # 2. 持续施加冲击
+        # =========================================================
+
+        active = self._push_active
+
+        if torch.any(active):
+            forces = torch.zeros(
+                (num_envs, 3),
+                device=self._device,
+                dtype=self._push_force.dtype,
+            )
+
+            forces[active] = self._push_force[active]
+
+            self._engine.set_body_forces(
+                env_id=None,
+                actor_id=char_id,
+                body_id=self._push_body_id,
+                forces=forces,
+            )
+
+
+            # =====================================================
+            # 3. 更新持续时间
+            # =====================================================
+
+            self._push_timer[active] -= 1
+
+            done = torch.logical_and(
+                self._push_active,
+                self._push_timer <= 0,
+            )
+
+            self._push_active[done] = False
+            self._push_timer[done] = 0
+            self._push_force[done] = 0.0
+
+    def _apply_external_disturbance(self):
+        self._apply_random_push_from_time()
+        return
+
     def _update_misc(self):
+        # self._apply_random_push()
         super()._update_misc()
         self._update_ref_motion()
 
         if (self._enable_ref_char()):
             self._update_ref_char()
-        
+        self._update_push_marker()
         return
     
     def _update_ref_motion(self):
@@ -297,8 +552,25 @@ class DeepMimicEnv(char_env.CharEnv):
             else:
                 ref_char_id0 = self._ref_char_ids[0]
                 assert(ref_char_id0 == ref_char_id)
-        
-        return 
+        if (self._visualize):
+            print(f"[build_env {env_id}] visualize=True, 尝试创建 marker")  # ← 临时
+            marker_id = self._engine.create_actor(
+                env_id=env_id,
+                asset_file="data/assets/objects/force_arrow.urdf",
+                name="push_marker",
+                is_visual=True,
+                enable_self_collisions=False,
+                disable_motors=True,
+                color=np.array([1.0, 0.15, 0.1]))
+
+            print(f"[build_env {env_id}] create_actor 返回 marker_id = {marker_id}", flush=True)
+            if (env_id == 0):
+                self._push_marker_id = marker_id
+                print(f"[build_env 0] 已赋值 _push_marker_id = {self._push_marker_id}", flush=True)
+            else:
+                assert (self._push_marker_id == marker_id)
+
+        return
     
     def _build_ref_character(self, env_id, config, color):
         char_file = config["env"]["char_file"]

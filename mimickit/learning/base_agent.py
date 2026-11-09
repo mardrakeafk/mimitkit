@@ -124,6 +124,18 @@ class BaseAgent(torch.nn.Module):
             torch.save(state_dict, out_file)
         return
 
+    def save_checkpoint(self, out_file):
+        if mp_util.is_root_proc():
+            checkpoint = {
+                "model": self.state_dict(),
+                "optimizer": self._optimizer.state_dict(),
+                "obs_norm": self._obs_norm.state_dict(),
+                "iter": self._iter,
+                "sample_count": self._sample_count,
+            }
+            torch.save(checkpoint, out_file)
+            Logger.print(f"Saved checkpoint to {out_file}")
+
     def load(self, in_file):
         state_dict = torch.load(in_file, map_location=self._device)
         self.load_state_dict(state_dict)

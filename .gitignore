@@ -5,3 +5,10 @@ __pycache__/
 output/
 .vscode/
 wandb/
+
+# local data / training outputs (not pushed)
+data/
+g1/
+.idea/
+*.pkl
+!/Light_Medium_start_frame.pkl

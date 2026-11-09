@@ -1,0 +1,7 @@
+--num_envs 4096
+
+--env_config data/envs/deepmimic_g1_stand_env.yaml
+--agent_config data/agents/deepmimic_g1_ppo_agent.yaml
+
+--log_file g1/stand/stand_log.txt
+--out_model_file g1/stand/stand_model.pt

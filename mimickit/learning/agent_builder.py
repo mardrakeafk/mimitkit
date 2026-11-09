@@ -6,6 +6,7 @@ import learning.awr_agent as awr_agent
 import learning.amp_agent as amp_agent
 import learning.ase_agent as ase_agent
 import learning.add_agent as add_agent
+import learning.switch_agent as switch_agent
 from util.logger import Logger
 
 def build_agent(agent_file, env, device):
@@ -29,6 +30,8 @@ def build_agent(agent_file, env, device):
         agent = ase_agent.ASEAgent(config=agent_config, env=env, device=device)
     elif (agent_name == add_agent.ADDAgent.NAME):
         agent = add_agent.ADDAgent(config=agent_config, env=env, device=device)
+    elif(agent_name == switch_agent.SwitchAgent.NAME):
+        agent = switch_agent.SwitchAgent(config=agent_config, env=env, device=device)
     else:
         assert(False), "Unsupported agent: {}".format(agent_name)
 

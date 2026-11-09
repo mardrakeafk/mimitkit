@@ -1,0 +1,7 @@
+--num_envs 1024
+
+--env_config data/envs/deepmimic_g1_run_env.yaml
+--agent_config data/agents/deepmimic_g1_ppo_agent.yaml
+
+--log_file g1/outputtest/run_log_push.txt
+--out_model_file g1/outputtest/run_model_push.pt

@@ -339,6 +339,25 @@ def calc_heading_quat_inv(q):
     heading_q = axis_angle_to_quat(axis, -heading)
     return heading_q
 
+@torch.jit.script
+def quat_from_x_to_dir(dir_vec):
+    # type: (Tensor) -> Tensor
+    ref = torch.zeros_like(dir_vec)
+    ref[..., 0] = 1
+
+    dir_vec = normalize(dir_vec)
+    axis = torch.cross(ref, dir_vec, dim=-1)
+    dot = torch.sum(ref * dir_vec, dim=-1)
+    angle = torch.acos(torch.clamp(dot, min=-1.0, max=1.0))
+
+    # dir 与 ±X 共线时 axis 退化为零向量，改用绕 Z 轴
+    default_axis = torch.zeros_like(dir_vec)
+    default_axis[..., 2] = 1
+    mask = (torch.norm(axis, dim=-1) > 1e-5).unsqueeze(-1)
+    axis = torch.where(mask, axis, default_axis)
+
+    return axis_angle_to_quat(axis, angle)
+
 # from isaacgym.torch_utils
 @torch.jit.script
 def quat_from_euler_xyz(roll, pitch, yaw):

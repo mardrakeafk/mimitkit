@@ -122,6 +122,8 @@ def run(rank, num_procs, device, master_port, args):
 
     return
 
+
+
 def main(argv):
     root_rank = 0
     args = load_args(argv)

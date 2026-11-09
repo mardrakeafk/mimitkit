@@ -39,6 +39,18 @@ def build_env(env_file, num_envs, device, visualize):
     elif (env_name == "static_objects"):
         import envs.static_objects_env as static_objects_env
         env = static_objects_env.StaticObjectsEnv(config=env_config, num_envs=num_envs, device=device, visualize=visualize)
+    elif (env_name == "switchdeepmimic"):
+        import envs.switchdeepmimic_env as switchdeepmimic_env
+        env = switchdeepmimic_env.SwitchDeepMimicEnv(config=env_config, num_envs=num_envs, device=device, visualize=visualize)
+    elif (env_name == "view_state_machine"):
+        import envs.view_state_machine_env as view_state_machine_env
+        env = view_state_machine_env.ViewStateMachineEnv(config=env_config, num_envs=num_envs, device=device, visualize=visualize)
+    elif (env_name == "push_eval"):
+        import envs.push_eval_env as push_eval_env
+        env = push_eval_env.PushEvalEnv(config=env_config, num_envs=num_envs, device=device, visualize=visualize)
+    elif (env_name == "state_machine"):
+        import envs.state_machine_env as state_machine_env
+        env = state_machine_env.StateMachineEnv(config=env_config, num_envs=num_envs, device=device, visualize=visualize)
     else:
         assert(False), "Unsupported env: {}".format(env_name)
 
